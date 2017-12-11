@@ -1,0 +1,122 @@
+#!/bin/bash
+# Copyright 2012-2013 Luke Dashjr
+#
+# This program is free software; you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published by the Free
+# Software Foundation; either version 3 of the License, or (at your option)
+# any later version.  See COPYING for more details.
+
+set -e
+set -x
+tag="$1"; shift
+[ -n "$tag" ] || exit 1
+sw="$1"; shift || true
+[ -n "$sw" ] || sw="$tag"
+
+builds=(win32 win64)
+
+win32_machine='i686-pc-mingw32'
+win32_CFLAGS='-g -march=i686'
+
+win64_machine='x86_64-w64-mingw32'
+win64_CFLAGS='-g'
+
+IDIR="$PWD"
+OUTDIR="$PWD"
+TMPROOT="$PWD/make-release-tmp"
+TMPDIR="${TMPROOT}/${sw}-tmp"
+
+mkdir -vp "$TMPDIR"
+
+# Source release
+git branch TMP "$tag"
+git clone . "$TMPDIR" -b TMP --depth 1
+git branch -D TMP
+cd "$TMPDIR"
+git submodule update --init
+{
+	git archive --prefix "$sw"/ --format tar "$tag"
+	git submodule --quiet foreach --recursive 'git archive --prefix "'"$sw"'/$path/" --format tar HEAD'
+} | tar -xivp
+cd "$sw"
+NOSUBMODULES=1 \
+NOCONFIGURE=1 \
+./autogen.sh
+find . -name autom4te.cache |
+ xargs rm -r
+cd ..
+zip -r "$OUTDIR/${sw}.zip" "$sw"
+tar cjvpf "$OUTDIR/${sw}.tbz2" "$sw"
+SRCDIR="$TMPDIR/$sw"
+
+dlls='
+	backtrace.dll
+	pdcurses.dll
+	libcurl-4.dll
+	pthreadGC2.dll
+	libjansson-4.dll
+	libusb-1.0.dll
+	zlib1.dll
+'
+docs='
+	AUTHORS
+	COPYING
+	NEWS
+	README
+	README.ASIC
+	README.Debian
+	README.FPGA
+	README.RPC
+	README.scrypt
+'
+for build in "${builds[@]}"; do
+	PKGNAME="${sw}-${build}"
+	PKGDIR="$TMPDIR/$PKGNAME"
+	cd "$TMPDIR"
+	mkdir -vp "$PKGDIR"
+	for v in machine CFLAGS; do
+		eval "${v}"="'$(eval echo "\${${build}_${v}}")'"
+	done
+	libdir="/usr/$machine/usr/bin/$dll"
+	for dll in $dlls; do
+		libdir="/usr/$machine/usr/lib"
+		[ -e "$libdir/$dll" ] ||
+			libdir="/usr/$machine/usr/bin"
+		cp -v -L "$libdir/$dll" "$PKGDIR"
+		"$machine"-strip "$PKGDIR/$dll"
+	done
+	for doc in $docs; do
+		sed 's/$/\r/' <"$doc" >"$PKGDIR/${doc}.txt"
+	done
+	
+	NOCONFIGURE=1 \
+	./autogen.sh
+	./configure \
+		--prefix='C:\\Program Files\\BFGMiner\\' \
+		CFLAGS="${CFLAGS} -Wall" \
+		--disable-cpumining \
+		--enable-opencl \
+		--enable-adl \
+		--enable-bitforce \
+		--enable-icarus \
+		--enable-modminer \
+		--enable-ztex \
+		--enable-scrypt \
+		--host="$machine"
+	make $MAKEOPTS
+	"$machine"-strip \
+		libblkmaker/.libs/*.dll \
+		*.exe
+	cp -v \
+		*.exe \
+		libblkmaker/.libs/*.dll \
+		*.cl \
+		example.conf \
+		windows-build.txt \
+		miner.php \
+		"$PKGDIR/"
+	make clean
+	cd "$PKGDIR/.."
+	zip -r "$OUTDIR/$PKGNAME.zip" "$PKGNAME"
+done
+cd "$IDIR"
